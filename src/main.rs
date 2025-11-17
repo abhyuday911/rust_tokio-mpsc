@@ -3,31 +3,46 @@ use actix_web::{
     web::{self, Data},
 };
 use serde_json::json;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 async fn index(state: Data<AppState>) -> impl Responder {
     let order_sender = state.order_sender.clone();
 
+    let (oneshot_sender, oneshot_receiver) = oneshot::channel::<String>();
+
+    let msg = EngineMessage {
+        payload: "hello".to_string(),
+        oneshot_sender: oneshot_sender,
+    };
+
     tokio::spawn(async move {
-        for i in 0..10 {
-            if let Err(_) = order_sender.send(i.to_string()).await {
-                println!("receiver dropped");
-                return;
-            }
+        if let Err(_) = order_sender.send(msg).await {
+            println!("receiver dropped");
+            return;
         }
     });
 
-    HttpResponse::Ok().json(json!({"message": "data snent to the engine!"}))
+    match oneshot_receiver.await {
+        Ok(val) => println!("you received -> {}", val),
+        Err(_) => println!("the sender dropped"),
+    }
+
+    HttpResponse::Ok().json(json!({"message": "data sent to the engine!"}))
 }
 
 #[derive(Clone)]
 pub struct AppState {
-    order_sender: mpsc::Sender<String>,
+    order_sender: mpsc::Sender<EngineMessage>,
+}
+
+pub struct EngineMessage {
+    pub payload: String,
+    pub oneshot_sender: oneshot::Sender<String>,
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let (sender, receiver) = mpsc::channel(100);
+    let (sender, receiver) = mpsc::channel::<EngineMessage>(100);
 
     tokio::spawn(run_engine(receiver));
 
@@ -45,8 +60,11 @@ async fn main() -> std::io::Result<()> {
     .await
 }
 
-async fn run_engine(mut receiver: mpsc::Receiver<String>) {
+async fn run_engine(mut receiver: mpsc::Receiver<EngineMessage>) {
     while let Some(i) = receiver.recv().await {
-        println!("got = {}", i)
+        i.oneshot_sender
+            .send("hello from underworld".to_string())
+            .unwrap();
+        println!("got {} in payload", i.payload)
     }
 }
